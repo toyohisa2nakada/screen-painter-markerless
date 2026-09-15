@@ -1,0 +1,130 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>synthetic homography test</title>
+<style>body{font-family:monospace;background:#111;color:#ddd;margin:16px} canvas{border:1px solid #444;margin:4px;max-width:45%} #log{white-space:pre}</style>
+</head><body>
+<div id="log">loading...</div>
+<div id="views"></div>
+<script src="/js/xfeat.js"></script>
+<script src="/js/homography.js"></script>
+<script src="/js/matcher.js"></script>
+<script src="/js/demo-game.js"></script>
+<script>
+// Cases: (1) phone close -> sees only a part of the screen  (2) phone far -> screen is a
+// small quad inside the phone image, surrounded by "room" clutter. Both with perspective tilt.
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+window.testResults = null;
+
+function warpImage(srcCanvas, H_screen2phone, outW, outH, bgRnd) {
+  // inverse mapping per pixel with bilinear sampling; outside the screen -> clutter background
+  const sctx = srcCanvas.getContext('2d');
+  const src = sctx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
+  const sw = src.width, sh = src.height, sd = src.data;
+  const out = new ImageData(outW, outH);
+  const od = out.data;
+  const Hinv = Homography.invert(H_screen2phone);
+  // clutter background: blurred noise blobs so the outside also has features (like a room)
+  const bg = document.createElement('canvas'); bg.width = outW; bg.height = outH;
+  const bctx = bg.getContext('2d'); bctx.fillStyle = '#6a6a60'; bctx.fillRect(0, 0, outW, outH);
+  for (let i = 0; i < 300; i++) {
+    bctx.fillStyle = `hsl(${bgRnd() * 360|0} 25% ${30 + bgRnd() * 40}%)`;
+    bctx.fillRect(bgRnd() * outW, bgRnd() * outH, 5 + bgRnd() * 60, 5 + bgRnd() * 60);
+  }
+  const bgd = bctx.getImageData(0, 0, outW, outH).data;
+  for (let y = 0; y < outH; y++) for (let x = 0; x < outW; x++) {
+    const [u, v] = Homography.apply(Hinv, x + 0.5, y + 0.5);
+    const o = (y * outW + x) * 4;
+    const uu = u - 0.5, vv = v - 0.5;
+    if (uu < 0 || vv < 0 || uu >= sw - 1 || vv >= sh - 1) { od[o] = bgd[o]; od[o+1] = bgd[o+1]; od[o+2] = bgd[o+2]; od[o+3] = 255; continue; }
+    const x0 = uu | 0, y0 = vv | 0, fx = uu - x0, fy = vv - y0;
+    for (let c = 0; c < 3; c++) {
+      const p00 = sd[(y0 * sw + x0) * 4 + c], p10 = sd[(y0 * sw + x0 + 1) * 4 + c];
+      const p01 = sd[((y0 + 1) * sw + x0) * 4 + c], p11 = sd[((y0 + 1) * sw + x0 + 1) * 4 + c];
+      od[o + c] = (p00 * (1 - fx) + p10 * fx) * (1 - fy) + (p01 * (1 - fx) + p11 * fx) * fy;
+    }
+    od[o + 3] = 255;
+  }
+  // mild noise + gamma to mimic a camera
+  for (let i = 0; i < od.length; i += 4) for (let c = 0; c < 3; c++) {
+    od[i + c] = Math.min(255, Math.max(0, od[i + c] * 0.85 + 10 + (Math.random() - 0.5) * 12));
+  }
+  const cv = document.createElement('canvas'); cv.width = outW; cv.height = outH;
+  cv.getContext('2d').putImageData(out, 0, 0);
+  return cv;
+}
+
+function seeded(seed) { let a = seed; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+async function main() {
+  const params = new URLSearchParams(location.search);
+  const texture = params.get('texture') !== '0';
+  const game = document.createElement('canvas'); game.width = 1280; game.height = 720;
+  const g = new DemoGame(game, { texture });
+  g.draw(performance.now());
+  document.getElementById('views').appendChild(game);
+
+  const client = new Matcher.FeatureClient();
+  const t0 = performance.now();
+  await client.init('/models/xfeat_web.onnx', params.get('gpu') !== '0');
+  log(`model ready: backend=${client.backend} (${(performance.now() - t0).toFixed(0)} ms), texture=${texture}`);
+
+  const scratch = document.createElement('canvas');
+  // reference features from the game canvas: a scale pyramid (XFeat is single-scale)
+  const levels = (params.get('levels') || '1280,640,320').split(',').map(Number);
+  const sets = [];
+  for (const L of levels) {
+    const rs = Matcher.fitSize(game.width, game.height, L);
+    const rg = Matcher.grabGray(game, game.width, game.height, rs.W, rs.H, scratch);
+    const f = await client.extract(rg.gray, rs.W, rs.H, { topK: 2048 });
+    sets.push(Matcher.toFrame(f, rg.sx, rg.sy));
+    log(`reference L=${L}: ${f.count} kpts, net ${f.msNet.toFixed(0)} ms, post ${f.msPost.toFixed(0)} ms`);
+  }
+  const rf = Matcher.concat(sets);
+
+  const phoneW = 640, phoneH = 480;
+  // ground-truth homographies screen -> phone
+  const cases = {
+    close: Homography.fromPoints( // screen sub-region [400..900]x[200..600] fills the phone with tilt
+      new Float32Array([400, 200, 900, 220, 880, 600, 420, 580]),
+      new Float32Array([0, 0, phoneW, 0, phoneW, phoneH, 0, phoneH])),
+    far: Homography.fromPoints( // whole screen is a tilted quad inside the phone image
+      new Float32Array([0, 0, 1280, 0, 1280, 720, 0, 720]),
+      new Float32Array([150, 110, 520, 130, 500, 370, 130, 340])),
+    farRot: Homography.fromPoints( // far + rotated ~20deg
+      new Float32Array([0, 0, 1280, 0, 1280, 720, 0, 720]),
+      new Float32Array([200, 60, 560, 190, 440, 430, 90, 300])),
+  };
+  const results = {};
+  const rnd = seeded(7);
+  for (const [name, Hgt] of Object.entries(cases)) {
+    const phone = warpImage(game, Hgt, phoneW, phoneH, rnd);
+    document.getElementById('views').appendChild(phone);
+    const ps = Matcher.fitSize(phoneW, phoneH, 640);
+    const pg = Matcher.grabGray(phone, phoneW, phoneH, ps.W, ps.H, scratch);
+    const t1 = performance.now();
+    const pf = Matcher.toFrame(await client.extract(pg.gray, ps.W, ps.H, { topK: 1024 }), pg.sx, pg.sy);
+    const t2 = performance.now();
+    const est = await Matcher.estimate(pf, rf, { threshold: 3, client }); // phone -> screen
+    const t3 = performance.now();
+    let err = null, sane = false;
+    if (est.H) {
+      // compare phone->screen against inverse GT at phone corners/centre
+      // error in screen px at points that lie on the screen: its corners + centre (as seen by the phone)
+      err = 0;
+      for (const [sx, sy] of [[0, 0], [1280, 0], [1280, 720], [0, 720], [640, 360]]) {
+        const [px, py] = Homography.apply(Hgt, sx, sy);
+        if (px < 0 || py < 0 || px > phoneW || py > phoneH) continue; // not visible to the phone
+        const a = Homography.apply(est.H, px, py);
+        err = Math.max(err, Math.hypot(a[0] - sx, a[1] - sy));
+      }
+      sane = Matcher.quadIsSane(Matcher.quadOf(est.H, phoneW, phoneH), 1e5);
+    }
+    results[name] = { kpts: pf.count, matches: est.nMatches, inliers: est.nInliers, maxErrPx: err, sane,
+      msExtract: t2 - t1, msMatchRansac: t3 - t2 };
+    log(`${name.padEnd(7)} kpts=${pf.count} matches=${est.nMatches} inliers=${est.nInliers} ` +
+        `maxErr=${err == null ? 'FAIL' : err.toFixed(2) + 'px'} sane=${sane} extract=${(t2 - t1).toFixed(0)}ms match+ransac=${(t3 - t2).toFixed(0)}ms`);
+  }
+  window.testResults = { backend: client.backend, texture, results };
+}
+main().catch(e => { log('ERROR ' + (e.stack || e)); window.testResults = { error: String(e) }; });
+</script>
+</body></html>
