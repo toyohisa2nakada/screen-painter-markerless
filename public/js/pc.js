@@ -120,7 +120,7 @@
 
   // ---------- homography state
   // Hcur: phone frame px -> game px (smoothed). quad: phone corners in game px.
-  let Hcur = null, quadCur = null, lastGoodAt = 0;
+  let Hcur = null, quadCur = null, centerCur = null, lastGoodAt = 0;
   const Hhist = []; // {t (perf ms, capture time), H}
   let lastEst = null;
 
@@ -142,6 +142,7 @@
     quadCur = q;
     Hcur = Homography.fromPoints(new Float32Array([0, 0, vw, 0, vw, vh, 0, vh]),
       new Float32Array([q[0][0], q[0][1], q[1][0], q[1][1], q[2][0], q[2][1], q[3][0], q[3][1]]));
+    centerCur = Homography.apply(Hcur, vw / 2, vh / 2);
     lastGoodAt = performance.now();
     Hhist.push({ t: tc, H: Hcur });
     while (Hhist.length > 20) Hhist.shift();
@@ -225,6 +226,13 @@
       hud.beginPath(); hud.moveTo(quadCur[0][0], quadCur[0][1]);
       for (let i = 1; i < 4; i++) hud.lineTo(quadCur[i][0], quadCur[i][1]);
       hud.closePath(); hud.stroke(); hud.setLineDash([]);
+
+      const [cx, cy] = centerCur;
+      hud.strokeStyle = 'rgba(60,255,60,0.95)'; hud.lineWidth = 3;
+      hud.beginPath();
+      hud.moveTo(cx - 20, cy); hud.lineTo(cx + 20, cy);
+      hud.moveTo(cx, cy - 20); hud.lineTo(cx, cy + 20);
+      hud.stroke();
     }
     statsEl.textContent =
       `${tracking ? 'TRACKING' : 'lost'}  fps ${stats.fps.toFixed(1)}  backend ${client.backend}\n` +
@@ -273,7 +281,7 @@
       console.warn('peer error', e.type, e);
       if (e.type === 'unavailable-id' || e.type === 'network' || e.type === 'server-error') {
         setStatus(`Peer error: ${e.type} - 3秒後に再試行`);
-        setTimeout(() => { try { peer.destroy(); } catch (_) {} openPeer(); }, 3000);
+        setTimeout(() => { try { peer.destroy(); } catch (_) { } openPeer(); }, 3000);
       }
     });
     peer.on('disconnected', () => { setStatus('シグナリング切断 - 再接続中'); setTimeout(() => peer.reconnect(), 1000); });
