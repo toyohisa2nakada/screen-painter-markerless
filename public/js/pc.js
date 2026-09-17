@@ -181,6 +181,7 @@
   async function processFrame(now, meta) {
     if (frameBusy || !refs.length) return;
     frameBusy = true;
+    // console.log(now - meta.captureTime)
     try {
       const vw = video.videoWidth, vh = video.videoHeight;
       if (!vw || !vh) return;

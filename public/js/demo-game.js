@@ -17,7 +17,7 @@
       for (let i = 0; i < 12; i++) {
         this.balls.push({
           x: rnd() * this.W, y: rnd() * this.H, r: 18 + rnd() * 40,
-          vx: (rnd() - 0.5) * 120, vy: (rnd() - 0.5) * 120,
+          vx: (rnd() - 0.5) * 60, vy: (rnd() - 0.5) * 60,
           hue: (i * 37) % 360, label: String.fromCharCode(65 + i),
         });
       }
