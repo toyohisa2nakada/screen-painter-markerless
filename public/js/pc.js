@@ -16,7 +16,7 @@
 
   // ---------- settings
   const S = {
-    refLevels: [1280, 640, 320],   // reference pyramid (max side in px). XFeat is single-scale.
+    refLevels: [1280, 640, 320, 160],   // reference pyramid (max side in px). XFeat is single-scale.
     refTopK: 1500, phoneTopK: 1024,
     phoneMaxSide: 640,
     refIntervalMs: 120, refKeep: 16,

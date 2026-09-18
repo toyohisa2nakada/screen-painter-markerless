@@ -87,19 +87,27 @@ async function matchDesc(msg) {
       });
       const S = out.s.data; // nA x nB cosine similarities; arg-max in JS (cheap, and avoids EP quirks)
       const bestB = new Int32Array(nA), bestBv = new Float32Array(nA).fill(-2);
+      const secondBv = new Float32Array(nA).fill(-2);
+// console.log(secondBv)
       const bestA = new Int32Array(nB), bestAv = new Float32Array(nB).fill(-2);
       for (let i = 0; i < nA; i++) {
         const o = i * nB;
         for (let j = 0; j < nB; j++) {
           const v = S[o + j];
-          if (v > bestBv[i]) { bestBv[i] = v; bestB[i] = j; }
+          // if (v > bestBv[i]) { bestBv[i] = v; bestB[i] = j; }
+          if (v > bestBv[i]) { secondBv[i] = bestBv[i]; bestBv[i] = v; bestB[i] = j; }
+          else if (v > secondBv[i]) { secondBv[i] = v; }
           if (v > bestAv[j]) { bestAv[j] = v; bestA[j] = i; }
         }
       }
+      const RATIO = 0.96;
       const res = [];
       for (let i = 0; i < nA; i++) {
         const j = bestB[i];
-        if (bestA[j] === i && bestBv[i] > minCos) res.push(i, j);
+        // if (bestA[j] === i && bestBv[i] > minCos){
+        if (bestA[j] === i && bestBv[i] > minCos && secondBv[i] < bestBv[i] * RATIO) {
+          res.push(i, j);
+        }
       }
       pairs = Int32Array.from(res);
     } else {
