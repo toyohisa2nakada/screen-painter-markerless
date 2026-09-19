@@ -26,6 +26,9 @@
     get latencyMs() { return Number($('latency').value); },
     get smooth() { return Number($('smooth').value) / 100; },
     get showDebug() { return $('showDebug').checked; },
+    fNormLong: 0.75,     // 焦点距離 / 映像の長辺（実測値）
+    rollSign: 1,         // ロールの符号（あとで確認して -1 にするかも）
+    get useGyro() { return $('useGyro').checked; },
   };
   for (const [id, out] of [['latency', 'latencyV'], ['minInl', 'minInlV'], ['smooth', 'smoothV']]) {
     $(id).addEventListener('input', () => { $(out).textContent = $(id).value; });
@@ -112,15 +115,75 @@
       clock.rtt = best.rtt; clock.offset = best.offset;
     } else if (msg.type === 'touch') {
       onTouch(msg);
+    } else if (msg.type === 'imu') {
+      onImu(msg.samples);
     } else if (msg.type === 'hello') {
       setStatus(`スマホ接続: ${msg.ua || ''}`);
     }
   }
   setInterval(() => { if (dataConn && dataConn.open) dataConn.send({ type: 'ping', t0: nowEpoch() }); }, 700);
 
+  // ---------- IMU buffer（PC時計の perf ms に直して保持）
+  const imu = [];               // {t, gx, gy, gz, ax, ay, az}
+  let imuRate = 0;              // 受信頻度の確認用
+  function onImu(samples) {
+    for (const s of samples) {
+      imu.push({ ...s, t: epochToPerf(s.t - clock.offset) });
+    }
+    const cutoff = performance.now() - 2000;      // 2秒分だけ残す
+    while (imu.length && imu[0].t < cutoff) imu.shift();
+    imuRate = samples.length;
+  }
+
+  /** t0〜t1（PC perf ms）の積算角度。単位はラジアン。 */
+  function integrateGyro(t0, t1) {
+    const D = Math.PI / 180;
+    let x = 0, y = 0, z = 0, prev = null;
+    for (const s of imu) {
+      if (s.t < t0) { prev = s; continue; }
+      if (s.t > t1) break;
+      if (prev) {
+        const dt = (s.t - prev.t) / 1000;
+        x += (s.gx + prev.gx) / 2 * D * dt;
+        y += (s.gy + prev.gy) / 2 * D * dt;
+        z += (s.gz + prev.gz) / 2 * D * dt;
+      }
+      prev = s;
+    }
+    return { x, y, z };
+  }
+
+  /** 基準の H を tNow まで回転で進めた H を返す。 */
+  function predictedH(tNow) {
+    if (!Hanchor) return null;
+    if (!S.useGyro || !imu.length) return Hanchor;
+    const g = integrateGyro(tAnchor, tNow);
+    const f = S.fNormLong * Math.max(vwCur, vhCur);
+    const cx = vwCur / 2, cy = vhCur / 2;
+
+    // カメラ座標での回転角（測定で決めた対応）
+    const ty = g.x;                    // 横方向の移動を生む
+    const tx = -g.z;                   // 縦方向の移動を生む
+    const tz = S.rollSign * g.y;       // ロール
+
+    // 小角近似の回転行列
+    const R = new Float64Array([
+      1, -tz, ty,
+      tz, 1, -tx,
+      -ty, tx, 1,
+    ]);
+    const K = new Float64Array([f, 0, cx, 0, f, cy, 0, 0, 1]);
+    const Kinv = new Float64Array([1 / f, 0, -cx / f, 0, 1 / f, -cy / f, 0, 0, 1]);
+    const Hdelta = Homography.mul(K, Homography.mul(R, Kinv));   // 基準時の画像座標 → 現在の画像座標
+    const inv = Homography.invert(Hdelta);
+    if (!inv) return Hanchor;
+    return Homography.mul(Hanchor, inv);                          // 現在の画像座標 → 画面座標
+  }
+
   // ---------- homography state
   // Hcur: phone frame px -> game px (smoothed). quad: phone corners in game px.
-  let Hcur = null, quadCur = null, centerCur = null, lastGoodAt = 0;
+  let Hcur = null, quadCur = null, centerCur = null, lastGoodAt = 0, prevTc = null;
+  let Hanchor = null, tAnchor = 0, vwCur = 0, vhCur = 0;
   const Hhist = []; // {t (perf ms, capture time), H}
   let lastEst = null;
 
@@ -142,7 +205,22 @@
     quadCur = q;
     Hcur = Homography.fromPoints(new Float32Array([0, 0, vw, 0, vw, vh, 0, vh]),
       new Float32Array([q[0][0], q[0][1], q[1][0], q[1][1], q[2][0], q[2][1], q[3][0], q[3][1]]));
+    // centerCur = Homography.apply(Hcur, vw / 2, vh / 2);
+    // --- 計測用（centerCur を更新する前に実行する）
+    if (centerCur && prevTc != null && tc > prevTc) {
+      const Hinv = Homography.invert(Hcur);
+      if (Hinv) {
+        const u = Homography.apply(Hinv, centerCur[0], centerCur[1]);
+        const du = u[0] - vw / 2, dv = u[1] - vh / 2;
+        const g = integrateGyro(prevTc, tc);
+        // if (Math.hypot(du, dv) > 1) {
+        //   console.log([du, dv, g.x, g.y, g.z, tc - prevTc, vw, vh].map(v => v.toFixed(4)).join(','));
+        // }
+      }
+    }
+    prevTc = tc;
     centerCur = Homography.apply(Hcur, vw / 2, vh / 2);
+    Hanchor = Hcur; tAnchor = tc; vwCur = vw; vhCur = vh;
     lastGoodAt = performance.now();
     Hhist.push({ t: tc, H: Hcur });
     while (Hhist.length > 20) Hhist.shift();
@@ -188,6 +266,7 @@
       // estimated capture time on the PC clock (perf ms)
       let tc = now - clock.rtt / 2 - S.latencyMs;
       if (meta && meta.captureTime) tc = meta.captureTime; // Chrome fills this for remote streams when available
+      stats.videoLag = now - tc;
       const sz = Matcher.fitSize(vw, vh, S.phoneMaxSide);
       const g = Matcher.grabGray(video, vw, vh, sz.W, sz.H, scratch2);
       const t0 = performance.now();
@@ -221,25 +300,27 @@
   // ---------- debug drawing
   function drawDebug() {
     const tracking = Hcur && performance.now() - lastGoodAt < 700;
-    hud.clearRect(0, 0, GW, GH);
-    if (S.showDebug && tracking && quadCur) {
-      hud.strokeStyle = 'rgba(0,255,180,0.9)'; hud.lineWidth = 4; hud.setLineDash([12, 8]);
-      hud.beginPath(); hud.moveTo(quadCur[0][0], quadCur[0][1]);
-      for (let i = 1; i < 4; i++) hud.lineTo(quadCur[i][0], quadCur[i][1]);
-      hud.closePath(); hud.stroke(); hud.setLineDash([]);
+    // hud.clearRect(0, 0, GW, GH);
+    // if (S.showDebug && tracking && quadCur) {
+    //   hud.strokeStyle = 'rgba(0,255,180,0.9)'; hud.lineWidth = 4; hud.setLineDash([12, 8]);
+    //   hud.beginPath(); hud.moveTo(quadCur[0][0], quadCur[0][1]);
+    //   for (let i = 1; i < 4; i++) hud.lineTo(quadCur[i][0], quadCur[i][1]);
+    //   hud.closePath(); hud.stroke(); hud.setLineDash([]);
 
-      const [cx, cy] = centerCur;
-      hud.strokeStyle = 'rgba(60,255,60,0.95)'; hud.lineWidth = 3;
-      hud.beginPath();
-      hud.moveTo(cx - 20, cy); hud.lineTo(cx + 20, cy);
-      hud.moveTo(cx, cy - 20); hud.lineTo(cx, cy + 20);
-      hud.stroke();
-    }
+    //   const [cx, cy] = centerCur;
+    //   hud.strokeStyle = 'rgba(60,255,60,0.95)'; hud.lineWidth = 3;
+    //   hud.beginPath();
+    //   hud.moveTo(cx - 20, cy); hud.lineTo(cx + 20, cy);
+    //   hud.moveTo(cx, cy - 20); hud.lineTo(cx, cy + 20);
+    //   hud.stroke();
+    // }
     statsEl.textContent =
       `${tracking ? 'TRACKING' : 'lost'}  fps ${stats.fps.toFixed(1)}  backend ${client.backend}\n` +
       `extract ${stats.msExtract.toFixed(0)} ms  match+ransac ${stats.msMatch.toFixed(0)} ms (refs tried ${stats.refTried})\n` +
       `matches ${stats.matches}  inliers ${stats.inliers}  refs ${refs.length} (${refs.length ? refs[refs.length - 1].ms.toFixed(0) : 0} ms/ref)\n` +
-      `rtt ${clock.rtt.toFixed(0)} ms  clock offset ${clock.offset.toFixed(0)} ms`;
+      `rtt ${clock.rtt.toFixed(0)} ms  video lag ${stats.videoLag.toFixed(0)} ms  clock offset ${clock.offset.toFixed(0)} ms\n` +
+      `imu ${imu.length} 件  最新 ${imu.length ? (performance.now() - imu[imu.length - 1].t).toFixed(0) : '-'} ms前  ` +
+      `gz ${imu.length ? imu[imu.length - 1].gz.toFixed(1) : '-'} deg/s`;
     if (!S.showDebug || !lastEst) return;
     const { est, vw, vh, pf } = lastEst;
     const dw = debugCanvas.width, dh = Math.round(dw * vh / vw);
@@ -268,6 +349,30 @@
       }
     }
   }
+
+  function drawHud() {
+    const tracking = Hanchor && performance.now() - lastGoodAt < 700;
+    hud.clearRect(0, 0, GW, GH);
+    if (S.showDebug && tracking) {
+      const H = predictedH(performance.now());
+      if (H) {
+        const q = Matcher.quadOf(H, vwCur, vhCur);
+        hud.strokeStyle = 'rgba(0,255,180,0.9)'; hud.lineWidth = 4; hud.setLineDash([12, 8]);
+        hud.beginPath(); hud.moveTo(q[0][0], q[0][1]);
+        for (let i = 1; i < 4; i++) hud.lineTo(q[i][0], q[i][1]);
+        hud.closePath(); hud.stroke(); hud.setLineDash([]);
+
+        const [cx, cy] = Homography.apply(H, vwCur / 2, vhCur / 2);
+        hud.strokeStyle = 'rgba(60,255,60,0.95)'; hud.lineWidth = 3;
+        hud.beginPath();
+        hud.moveTo(cx - 20, cy); hud.lineTo(cx + 20, cy);
+        hud.moveTo(cx, cy - 20); hud.lineTo(cx, cy + 20);
+        hud.stroke();
+      }
+    }
+    requestAnimationFrame(drawHud);
+  }
+  requestAnimationFrame(drawHud);
 
   // ---------- PeerJS
   const peerOpts = {

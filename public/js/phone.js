@@ -17,13 +17,23 @@
   let restartTimer = null;
 
   async function openCamera() {
+    // モーションセンサーの許可（iOS 13+）
+    if (typeof DeviceMotionEvent !== 'undefined' &&
+      typeof DeviceMotionEvent.requestPermission === 'function') {
+      try {
+        const r = await DeviceMotionEvent.requestPermission();
+        console.log('motion permission:', r);
+      } catch (e) { console.warn('motion permission', e); }
+    }
+    startMotion();
+
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
     });
     const track = stream.getVideoTracks()[0];
-    try { track.contentHint = 'detail'; } catch (_) {}
+    try { track.contentHint = 'detail'; } catch (_) { }
     video.srcObject = stream;
     await video.play();
     return track;
@@ -58,8 +68,8 @@
 
   function connectToPC() {
     if (!peer || !peer.open || !stream) return;
-    if (call) { try { call.close(); } catch (_) {} }
-    if (conn) { try { conn.close(); } catch (_) {} }
+    if (call) { try { call.close(); } catch (_) { } }
+    if (conn) { try { conn.close(); } catch (_) { } }
     setStatus('PCに接続中...');
     call = peer.call(cfg.pcPeerId, stream);
     call.on('close', () => { setStatus('映像切断 - 再接続します'); scheduleReconnect(); });
@@ -89,10 +99,10 @@
       if (e.type === 'peer-unavailable') { setStatus('PC側ページが見つかりません - 再試行中'); scheduleReconnect(); }
       else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') {
         setStatus(`シグナリングエラー (${e.type}) - 再試行中`);
-        setTimeout(() => { try { peer.destroy(); } catch (_) {} openPeer(); }, 3000);
+        setTimeout(() => { try { peer.destroy(); } catch (_) { } openPeer(); }, 3000);
       }
     });
-    peer.on('disconnected', () => setTimeout(() => { try { peer.reconnect(); } catch (_) {} }, 1000));
+    peer.on('disconnected', () => setTimeout(() => { try { peer.reconnect(); } catch (_) { } }, 1000));
   }
 
   // ---------- touches: client coords -> video frame pixels (object-fit: contain)
@@ -164,4 +174,25 @@
       if (sender) await sender.replaceTrack(track); else connectToPC();
     } catch (e) { console.warn('re-acquire', e); }
   });
+
+  // ---------- motion sensors
+  let imuBuf = [];
+  function startMotion() {
+    window.addEventListener('devicemotion', (e) => {
+      const r = e.rotationRate;            // deg/s
+      const a = e.accelerationIncludingGravity;
+      if (!r) return;
+      imuBuf.push({
+        t: nowEpoch(),
+        gx: r.beta || 0, gy: r.gamma || 0, gz: r.alpha || 0,
+        ax: a ? (a.x || 0) : 0, ay: a ? (a.y || 0) : 0, az: a ? (a.z || 0) : 0,
+      });
+    });
+    // 50msごとにまとめて送る（1件ずつ送ると通信の負荷が上がる）
+    setInterval(() => {
+      if (!imuBuf.length) return;
+      send({ type: 'imu', samples: imuBuf });
+      imuBuf = [];
+    }, 20);
+  }
 })();
