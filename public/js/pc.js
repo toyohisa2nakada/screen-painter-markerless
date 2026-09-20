@@ -26,7 +26,7 @@
     get latencyMs() { return Number($('latency').value); },
     get smooth() { return Number($('smooth').value) / 100; },
     get showDebug() { return $('showDebug').checked; },
-    fNormLong: 0.75,     // 焦点距離 / 映像の長辺（実測値）
+    fNormLong: 1.0,     // 焦点距離 / 映像の長辺（実測値）
     rollSign: 1,         // ロールの符号（あとで確認して -1 にするかも）
     get useGyro() { return $('useGyro').checked; },
   };
@@ -149,6 +149,13 @@
         z += (s.gz + prev.gz) / 2 * D * dt;
       }
       prev = s;
+    }
+    // ここから外挿: 最新サンプルより先は、その角速度が続くとみなす
+    if (prev && t1 > prev.t) {
+      const dt = Math.min((t1 - prev.t) / 1000, 0.1);   // 最大100msまで
+      x += prev.gx * D * dt;
+      y += prev.gy * D * dt;
+      z += prev.gz * D * dt;
     }
     return { x, y, z };
   }
