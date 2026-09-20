@@ -187,6 +187,10 @@
     <div class="row">
       <label>最小inlier <input type="range" id="minInl" min="8" max="80" value="12"> <span id="minInlV">12</span></label>
       <label>平滑化 <input type="range" id="smooth" min="0" max="95" value="50"> <span id="smoothV">50</span>%</label>
+      <label title="焦点距離 / 映像の長辺。回転に対して絵をどれだけ動かすか">ジャイロ感度 <input type="range" id="fNorm" min="0" max="300" value="100">
+        <span id="fNormV">1.00</span></label>
+      <label>ゲーム速度 <input type="range" id="gameSpeed" min="0" max="300" value="100"> <span
+          id="gameSpeedV">100</span>%</label>
     </div>
   </div>
   <script src="/vendor/peerjs/peerjs.min.js"></script>

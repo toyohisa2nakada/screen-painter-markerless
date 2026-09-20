@@ -10,7 +10,8 @@
       this.ctx = canvas.getContext('2d');
       this.W = canvas.width; this.H = canvas.height;
       this.texture = opts.texture !== false;
-      this.frozen = !!opts.frozen; // for tests: no motion
+      // this.frozen = !!opts.frozen; // for tests: no motion
+      this.speed = opts.speed != null ? opts.speed : 1;
       this.t0 = performance.now();
       this.balls = [];
       const rnd = mulberry32(12345);
@@ -56,7 +57,8 @@
     draw(now) {
       const ctx = this.ctx;
       const dt = Math.min(0.05, (now - this.last) / 1000); this.last = now;
-      if (!this.frozen) this.step(dt);
+      // if (!this.frozen) this.step(dt);
+      if (this.speed > 0) this.step(dt * this.speed);
       if (this.texture) ctx.drawImage(this.texCanvas, 0, 0);
       else { ctx.fillStyle = '#1b2230'; ctx.fillRect(0, 0, this.W, this.H); }
       for (const b of this.balls) {

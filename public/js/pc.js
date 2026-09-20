@@ -25,23 +25,30 @@
     get minInliers() { return Number($('minInl').value); },
     get latencyMs() { return Number($('latency').value); },
     get smooth() { return Number($('smooth').value) / 100; },
+    get gameSpeed() { return Number($('gameSpeed').value) / 100; },
     get showDebug() { return $('showDebug').checked; },
-    fNormLong: 1.4,     // 焦点距離 / 映像の長辺（実測値）
+    // fNormLong: 1.4,     // 焦点距離 / 映像の長辺（実測値）
+    get fNormLong() { return Number($('fNorm').value) / 100; },   // 焦点距離 / 映像の長辺
     rollSign: 1,         // ロールの符号（あとで確認して -1 にするかも）
     get useGyro() { return $('useGyro').checked; },
   };
-  for (const [id, out] of [['latency', 'latencyV'], ['minInl', 'minInlV'], ['smooth', 'smoothV']]) {
+  for (const [id, out] of [['latency', 'latencyV'], ['minInl', 'minInlV'], ['smooth', 'smoothV'], ['gameSpeed', 'gameSpeedV']]) {
     $(id).addEventListener('input', () => { $(out).textContent = $(id).value; });
   }
+  $('fNorm').addEventListener('input', () => { $('fNormV').textContent = (Number($('fNorm').value) / 100).toFixed(2); });
   $('toggle').addEventListener('click', () => $('panel').classList.toggle('hidden'));
   window.addEventListener('keydown', (e) => { if (e.key === 'd' || e.key === 'D') $('panel').classList.toggle('hidden'); });
   $('clear').addEventListener('click', () => paint.clearRect(0, 0, GW, GH));
 
   // ---------- demo game
   const urlp = new URLSearchParams(location.search);
-  const game = new DemoGame(gameCanvas, { texture: true, frozen: urlp.get('frozen') === '1' });
+  // const game = new DemoGame(gameCanvas, { texture: true, frozen: urlp.get('frozen') === '1' });
+  // $('texture').addEventListener('change', () => { game.texture = $('texture').checked; });
+  // function gameLoop(now) { game.draw(now); requestAnimationFrame(gameLoop); }
+  if (urlp.get('frozen') === '1') { $('gameSpeed').value = 0; $('gameSpeedV').textContent = '0'; }
+  const game = new DemoGame(gameCanvas, { texture: true, speed: S.gameSpeed });
   $('texture').addEventListener('change', () => { game.texture = $('texture').checked; });
-  function gameLoop(now) { game.draw(now); requestAnimationFrame(gameLoop); }
+  function gameLoop(now) { game.speed = S.gameSpeed; game.draw(now); requestAnimationFrame(gameLoop); }
   requestAnimationFrame(gameLoop);
 
   // ---------- config, QR
@@ -166,6 +173,7 @@
     if (!S.useGyro || !imu.length) return Hanchor;
     const g = integrateGyro(tAnchor, tNow);
     const f = S.fNormLong * Math.max(vwCur, vhCur);
+    if (!(f > 0)) return Hanchor;
     const cx = vwCur / 2, cy = vhCur / 2;
 
     // カメラ座標での回転角（測定で決めた対応）
