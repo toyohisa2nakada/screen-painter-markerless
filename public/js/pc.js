@@ -26,7 +26,7 @@
     get latencyMs() { return Number($('latency').value); },
     get smooth() { return Number($('smooth').value) / 100; },
     get showDebug() { return $('showDebug').checked; },
-    fNormLong: 1.0,     // 焦点距離 / 映像の長辺（実測値）
+    fNormLong: 1.4,     // 焦点距離 / 映像の長辺（実測値）
     rollSign: 1,         // ロールの符号（あとで確認して -1 にするかも）
     get useGyro() { return $('useGyro').checked; },
   };
@@ -189,7 +189,7 @@
 
   // ---------- homography state
   // Hcur: phone frame px -> game px (smoothed). quad: phone corners in game px.
-  let Hcur = null, quadCur = null, centerCur = null, lastGoodAt = 0, prevTc = null;
+  let Hcur = null, quadCur = null, centerCur = null, lastGoodAt = 0;
   let Hanchor = null, tAnchor = 0, vwCur = 0, vhCur = 0;
   const Hhist = []; // {t (perf ms, capture time), H}
   let lastEst = null;
@@ -200,32 +200,22 @@
     // smoothing on the projected phone corners, reset on big jumps
     const a = S.smooth;
     if (quadCur && performance.now() - lastGoodAt < 500) {
-      let jump = 0;
-      for (let i = 0; i < 4; i++) jump = Math.max(jump, Math.hypot(q[i][0] - quadCur[i][0], q[i][1] - quadCur[i][1]));
-      if (jump < 0.35 * GW) {
-        for (let i = 0; i < 4; i++) {
-          q[i][0] = a * quadCur[i][0] + (1 - a) * q[i][0];
-          q[i][1] = a * quadCur[i][1] + (1 - a) * q[i][1];
+      const Hp = predictedH(tc);
+      const qp = Hp ? Matcher.quadOf(Hp, vwCur, vhCur) : null;
+      if (qp) {
+        let jump = 0;
+        for (let i = 0; i < 4; i++) jump = Math.max(jump, Math.hypot(q[i][0] - quadCur[i][0], q[i][1] - quadCur[i][1]));
+        if (jump < 0.35 * GW) {
+          for (let i = 0; i < 4; i++) {
+            q[i][0] = a * quadCur[i][0] + (1 - a) * q[i][0];
+            q[i][1] = a * quadCur[i][1] + (1 - a) * q[i][1];
+          }
         }
       }
     }
     quadCur = q;
     Hcur = Homography.fromPoints(new Float32Array([0, 0, vw, 0, vw, vh, 0, vh]),
       new Float32Array([q[0][0], q[0][1], q[1][0], q[1][1], q[2][0], q[2][1], q[3][0], q[3][1]]));
-    // centerCur = Homography.apply(Hcur, vw / 2, vh / 2);
-    // --- 計測用（centerCur を更新する前に実行する）
-    if (centerCur && prevTc != null && tc > prevTc) {
-      const Hinv = Homography.invert(Hcur);
-      if (Hinv) {
-        const u = Homography.apply(Hinv, centerCur[0], centerCur[1]);
-        const du = u[0] - vw / 2, dv = u[1] - vh / 2;
-        const g = integrateGyro(prevTc, tc);
-        // if (Math.hypot(du, dv) > 1) {
-        //   console.log([du, dv, g.x, g.y, g.z, tc - prevTc, vw, vh].map(v => v.toFixed(4)).join(','));
-        // }
-      }
-    }
-    prevTc = tc;
     centerCur = Homography.apply(Hcur, vw / 2, vh / 2);
     Hanchor = Hcur; tAnchor = tc; vwCur = vw; vhCur = vh;
     lastGoodAt = performance.now();
