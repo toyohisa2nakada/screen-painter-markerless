@@ -126,4 +126,3 @@ git clone https://github.com/verlab/accelerated_features
 cp tools/export_onnx_web.py accelerated_features/
 cd accelerated_features && pip install torch onnx && python export_onnx_web.py ../models/xfeat_web.onnx
 ```
-
